@@ -1,0 +1,21 @@
+/*!
+ * Cloudflare Turnstile for Kanboard's login form.
+ *
+ * The widget is 300x65 and lands at the top of the form's actions block, so
+ * all it needs is a gap between itself and the button underneath.
+ * Everything else about it is drawn inside Cloudflare's own iframe.
+ */
+.turnstile-widget {
+    margin: 0 0 0.75em;
+}
+
+/* A themed login column can be narrower than the widget's own 300px. */
+.turnstile-widget iframe {
+    max-width: 100%;
+}
+
+.turnstile-error {
+    margin: 0.25em 0 0;
+    color: #b94a48;
+    font-size: 0.9em;
+}

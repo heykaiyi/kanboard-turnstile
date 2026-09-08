@@ -1,15 +1,18 @@
 # Turnstile — Cloudflare Turnstile on the Kanboard login form
 
+**English** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md)
+
 Puts a [Cloudflare Turnstile](https://developers.cloudflare.com/turnstile/)
-challenge on `/login` and verifies it server-side **before** the username and
-password are looked at.
+challenge above the sign-in button and verifies it server-side **before** the
+username and password are looked at.
 
 Kanboard already ships a CAPTCHA, but it only appears after a few failed
 attempts, and it is a GD-rendered image that OCR reads without much trouble.
 Turnstile runs on every login instead, is invisible for most visitors, and is
 checked against Cloudflare rather than against a value in the session.
 
-No core file is modified and no template is overridden.
+No core file is modified, no template is overridden, and no theme is required —
+it draws correctly on a stock Kanboard.
 
 ---
 
@@ -39,25 +42,25 @@ URL** on an instance with `PLUGIN_INSTALLER` enabled.
 Then reload the page. There is no cache to clear and no migration to run — the
 plugin creates no table and writes two rows into Kanboard's own `settings`.
 
-To uninstall, delete the directory. The two settings rows are all it leaves
-behind, and they are inert without it.
+To uninstall, delete the directory. Those two rows are all it leaves behind,
+and they are inert without it.
 
 ### Requirements
 
 Kanboard 1.2.0 or later, and outbound HTTPS from the server to
-`challenges.cloudflare.com` — the verification is a server-to-server call, so
-an instance behind an egress firewall needs that host allowed or every login
-fails closed.
+`challenges.cloudflare.com` — the verification is a server-to-server call, so an
+instance behind an egress firewall needs that host allowed or every login fails
+closed.
 
 ---
 
 ## Setup
 
 **1. Create the widget.** In the Cloudflare dashboard, **Turnstile → Add
-widget**. List every hostname the login page is served from — the widget
-refuses any other one with error `110200`, and the list takes host names, not
-IP addresses, so `127.0.0.1` can never be authorised. For a development
-instance, add `localhost`.
+widget**. List every hostname the login page is served from — the widget refuses
+any other one with error `110200`, and the list takes host names, not IP
+addresses, so `127.0.0.1` can never be authorised. For a development instance,
+add `localhost`.
 
 **2. Paste the keys.** **Settings → Turnstile** (admin only). Site key and
 secret key, then **Save**.
@@ -71,8 +74,8 @@ whether the saved secret is usable, without going anywhere near the login form:
 | Cloudflare rejected the secret key. | Wrong secret, or one from a deleted widget. |
 | Could not reach Cloudflare: … | The server has no route to `challenges.cloudflare.com`. |
 
-`siteverify` has no ping endpoint, so this posts a deliberately invalid token:
-a working secret answers `invalid-input-response`, a broken one answers
+`siteverify` has no ping endpoint, so this posts a deliberately invalid token: a
+working secret answers `invalid-input-response`, a broken one answers
 `invalid-input-secret`. The two failures are told apart, which is the point —
 "unreachable" and "rejected" need different fixes.
 
@@ -100,8 +103,8 @@ restores a plain login form on the next request.
 The browser tells you which failure it was. Cloudflare's own error rendering is
 a bare "Troubleshoot" link, so the plugin prints the code under the widget
 instead: `110200` is a hostname that is not on the widget's list, `400xxx` an
-invalid site key, `300xxx` a challenge that failed to execute, `600xxx` one
-that timed out.
+invalid site key, `300xxx` a challenge that failed to execute, `600xxx` one that
+timed out.
 
 ---
 
@@ -130,30 +133,42 @@ including a request that could not be made at all. The user sees one message —
 *Human verification failed, please try again.* — and the reason, with
 Cloudflare's own error codes, goes to Kanboard's log rather than to the browser.
 
-### The widget, and the input it needs
+### Where the widget goes
 
-`template:auth:login-form:after` is the hook that renders under the password
-field, and it fires **after** `</form>`. The token input Turnstile creates for
-itself is therefore outside the form and is never posted.
+Kanboard's login template offers two hooks: one above the whole form, and one
+after `</form>`. Neither is inside it — and a widget rendered outside the form
+keeps the token field Turnstile creates for itself outside the form too, where
+the browser will never post it.
 
-Moving the widget into the form races against `api.js` rendering it, so
-`Assets/js/turnstile.js` leaves it where it is and puts its own hidden input
-inside the form instead. It fills that input twice over:
+So the plugin renders an empty placeholder into the second hook and
+`Assets/js/turnstile.js` moves it into the form's actions block, as the first
+child — directly above the sign-in button. Turnstile then draws itself inside
+the form, and its token field is posted with the username and the password like
+any other input. Nothing is copied and no hidden field is maintained.
 
-- from `data-callback`, which Turnstile fires as soon as the challenge is
-  solved; and
-- from the widget's own token when the form is submitted, if the callback never
-  arrived.
+Into the actions block rather than in front of it, because a theme is free to
+lay the login form out with flexbox and explicit `order` values — Kanboard's
+markup gives it no other way to get "Remember me" and "Forgot password?" onto
+one line — and an order of its own is the one thing this plugin cannot guess.
+Inside the block that holds the button, the widget is carried wherever that
+button goes.
 
-The second one is not belt-and-braces, it is the fix for a real race. Kanboard
-loads plugin scripts with `defer`, the widget loads `api.js` with `async`, and
-`async` can win — Turnstile then resolves `data-callback` off `window` at render
-time, finds nothing, and drops it silently. The symptom is the worst kind: a
-widget that says **Success!** and a login that is rejected for having no token.
-Reading the token back at submit time makes the load order irrelevant.
+### Why the script loads api.js, and the template does not
 
-The script is a file rather than an inline block because Kanboard serves
-`default-src 'self'`, which refuses inline scripts.
+The widget is rendered explicitly, and `api.js` is requested by the plugin's own
+script rather than by a `<script>` tag in the template, so that the ordering is
+decided rather than raced.
+
+The usual way round — put `cf-turnstile` on the element and name the callbacks
+in `data-callback` — resolves those names off `window` at the moment `api.js`
+runs. Kanboard loads plugin scripts with `defer` and `api.js` would load with
+`async`, so `api.js` can get there first, find no callback, and drop it in
+silence. The symptom is the worst kind: a widget that says **Success!** and a
+login rejected for having no token. Loading `api.js` only after this script has
+run, and handing `render()` real function references, makes that impossible.
+
+Being a file rather than an inline block is not a preference either: Kanboard
+serves `default-src 'self'`, which refuses inline scripts.
 
 ### Content-Security-Policy
 
@@ -164,17 +179,17 @@ found it.
 
 ### Light and dark
 
-The widget renders with `data-theme="auto"`, which follows the operating
-system. Kanboard's own light/dark choice is per user and the login form is the
-one screen where there is no user yet, so there is nothing else to follow.
+The widget is rendered with `theme: 'auto'`, which follows the operating system.
+Kanboard's own light/dark choice is per user, and the login form is the one
+screen where there is no user yet, so there is nothing else to follow.
 
 ---
 
 ## Translations
 
-English is the source text; Traditional Chinese (`zh_TW`) ships in `Locale/`.
-Any other language falls back to English, and a new one is a single
-`Locale/<code>/translations.php` file.
+English is the source text; Traditional Chinese (`zh_TW`) and Japanese
+(`ja_JP`) ship in `Locale/`. Any other language falls back to English, and a new
+one is a single `Locale/<code>/translations.php` file.
 
 ---
 

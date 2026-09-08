@@ -1,136 +1,158 @@
 /*!
  * Cloudflare Turnstile for Kanboard's login form.
  *
- * The hook that renders the widget fires after </form>, so the token input
- * Turnstile creates for itself sits outside the form and is never posted.
- * Rather than move the widget — which races against api.js rendering it —
- * this puts its own hidden input inside the form and fills it from the
- * widget, so the value is posted with the credentials.
+ * Kanboard's login template offers two hooks — one above the whole form and
+ * one after </form> — and neither is inside it. So the plugin renders an empty
+ * placeholder into the second one and this file moves it into the form, above
+ * the sign-in button, before the challenge is drawn. Turnstile then creates its
+ * own token field inside the form and the browser posts it like any other
+ * input; nothing has to be copied anywhere.
  *
- * Loaded as a file rather than inline because Kanboard serves
- * `default-src 'self'` and inline scripts are refused.
+ * The widget is rendered explicitly rather than by dropping the `cf-turnstile`
+ * class on the placeholder, and api.js is loaded from here rather than from the
+ * template, so that ordering is decided rather than raced. Implicit rendering
+ * resolves data-callback off `window` at the moment api.js runs — and Kanboard
+ * loads plugin scripts with `defer` while api.js would load with `async`, so
+ * api.js can win, find no callback, and drop it. The widget then says
+ * "Success!" and the login is rejected for having no token. Loading api.js
+ * after this file has run, and handing render() real function references,
+ * makes that impossible.
+ *
+ * This is a file rather than an inline script because Kanboard serves
+ * `default-src 'self'`, which refuses inline scripts.
  */
 (function () {
     'use strict';
 
+    var API_URL = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
     var FIELD = 'cf-turnstile-response';
+    var CALLBACK = 'kbTurnstileRender';
 
-    function getForm() {
+    function widget() {
+        return document.querySelector('.turnstile-widget');
+    }
+
+    /* .form-login and .form-actions are Kanboard's own markup, not a theme's,
+     * so this holds on a stock install and on a restyled one alike. */
+    function form() {
         return document.querySelector('.form-login form');
     }
 
-    function getInput() {
-        var form = getForm();
+    function showError(code) {
+        var container = widget();
 
-        if (form === null) {
-            return null;
-        }
-
-        var input = form.querySelector('input[name="' + FIELD + '"]');
-
-        if (input === null) {
-            input = document.createElement('input');
-            input.type = 'hidden';
-            input.name = FIELD;
-            form.appendChild(input);
-        }
-
-        return input;
-    }
-
-    function setToken(token) {
-        var input = getInput();
-
-        if (input !== null) {
-            input.value = token || '';
-        }
-    }
-
-    /* Where Turnstile itself keeps the solved token: a hidden input inside the
-     * widget container, which the API object also reads back through
-     * getResponse(). Either one is the token the callback would have handed
-     * over, so this is what makes the callback optional. */
-    function readWidgetToken() {
-        var el = document.querySelector('.turnstile-widget input[name="' + FIELD + '"]');
-
-        if (el !== null && el.value !== '') {
-            return el.value;
-        }
-
-        if (window.turnstile && typeof window.turnstile.getResponse === 'function') {
-            try {
-                return window.turnstile.getResponse() || '';
-            } catch (e) {
-                return '';
-            }
-        }
-
-        return '';
-    }
-
-    /* Named on the widget through data-callback / data-expired-callback /
-     * data-error-callback, and resolved off window when Turnstile fires. */
-    window.kbTurnstileSolved = function (token) {
-        setToken(token);
-    };
-
-    window.kbTurnstileCleared = function () {
-        setToken('');
-    };
-
-    /* Cloudflare hands the error callback a code and otherwise renders a bare
-     * "Troubleshoot" link, which says nothing about what went wrong. Showing
-     * the code makes the failure diagnosable from the page itself:
-     * 110200 = domain not allowed, 300xxx = challenge execution failure,
-     * 400xxx = invalid sitekey, 600xxx = challenge timed out. */
-    window.kbTurnstileError = function (code) {
-        setToken('');
-
-        var widget = document.querySelector('.turnstile-widget');
-
-        if (widget === null) {
+        if (container === null) {
             return;
         }
 
-        var note = widget.querySelector('.turnstile-error');
+        var note = container.querySelector('.turnstile-error');
 
         if (note === null) {
             note = document.createElement('p');
             note.className = 'turnstile-error';
-            widget.appendChild(note);
+            container.appendChild(note);
         }
 
+        /* Cloudflare otherwise renders a bare "Troubleshoot" link, which says
+         * nothing about what went wrong. The code makes the failure
+         * diagnosable from the page itself: 110200 = hostname not on the
+         * widget's list, 300xxx = challenge execution failure, 400xxx =
+         * invalid sitekey, 600xxx = challenge timed out. */
         note.textContent = 'Turnstile: ' + code;
-    };
+    }
 
-    function bind() {
-        var form = getForm();
+    function render() {
+        var container = widget();
 
-        if (form === null) {
+        if (container === null || typeof window.turnstile === 'undefined') {
             return;
         }
 
-        getInput();
+        window.turnstile.render(container, {
+            sitekey: container.getAttribute('data-sitekey'),
+            theme: 'auto',
+            'error-callback': showError
+        });
+    }
 
-        /* The callbacks above are the fast path, not the guarantee. Kanboard
-         * loads this file with `defer` while the widget loads api.js with
-         * `async`, so api.js can render the widget before this file has run —
-         * and Turnstile resolves data-callback off window at render time, which
-         * silently drops it. The symptom is a widget that says it succeeded and
-         * a login that is rejected for having no token. Reading the token back
-         * when the form is submitted makes the load order irrelevant. */
-        form.addEventListener('submit', function () {
-            var input = getInput();
+    /* Belt and braces for the one thing that would fail silently: if the token
+     * field is ever not inside the form when it is submitted, put it there. */
+    function guard(loginForm) {
+        loginForm.addEventListener('submit', function () {
+            var field = loginForm.querySelector('input[name="' + FIELD + '"]');
 
-            if (input !== null && input.value === '') {
-                input.value = readWidgetToken();
+            if (field !== null && field.value !== '') {
+                return;
             }
+
+            if (typeof window.turnstile === 'undefined') {
+                return;
+            }
+
+            var token = '';
+
+            try {
+                token = window.turnstile.getResponse() || '';
+            } catch (e) {
+                return;
+            }
+
+            if (field === null) {
+                field = document.createElement('input');
+                field.type = 'hidden';
+                field.name = FIELD;
+                loginForm.appendChild(field);
+            }
+
+            field.value = token;
         }, true);
     }
 
+    function start() {
+        var container = widget();
+
+        if (container === null) {
+            return;
+        }
+
+        var loginForm = form();
+
+        // HIDE_LOGIN_FORM, or a template that renders no form at all: there is
+        // nothing to protect, so there is nothing to draw.
+        if (loginForm === null) {
+            container.parentNode.removeChild(container);
+            return;
+        }
+
+        /* Into the actions block rather than in front of it. A theme is free
+         * to lay the login form out with flexbox and explicit `order` values —
+         * Kanboard's own markup gives it no other way to get "remember me" and
+         * "forgot password?" onto one line — and an `order` of its own is the
+         * one thing this plugin cannot guess. Sitting inside the block that
+         * holds the button means the widget is carried wherever that button
+         * goes, in any layout, without knowing anything about it. */
+        var actions = loginForm.querySelector('.form-actions');
+
+        if (actions !== null) {
+            actions.insertBefore(container, actions.firstChild);
+        } else {
+            loginForm.appendChild(container);
+        }
+
+        guard(loginForm);
+
+        window[CALLBACK] = render;
+
+        var script = document.createElement('script');
+        script.src = API_URL + '?render=explicit&onload=' + CALLBACK;
+        script.async = true;
+        script.defer = true;
+        document.head.appendChild(script);
+    }
+
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', bind);
+        document.addEventListener('DOMContentLoaded', start);
     } else {
-        bind();
+        start();
     }
 })();

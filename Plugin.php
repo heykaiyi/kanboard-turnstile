@@ -23,16 +23,24 @@ class Plugin extends Base
 {
     public function initialize()
     {
-        // The widget itself, under the password field.
+        // The widget's placeholder. Kanboard's login template has no hook
+        // inside the form, so this lands after </form> and the script moves it
+        // up to sit above the sign-in button.
         $this->template->hook->attach('template:auth:login-form:after', 'Turnstile:auth/widget');
 
         // Settings live next to every other configuration screen.
         $this->template->hook->attach('template:config:sidebar', 'Turnstile:config/sidebar');
 
-        // The token plumbing. Kanboard serves `default-src 'self'`, so this
-        // cannot be an inline script.
+        // Placement and rendering. Kanboard serves `default-src 'self'`, so
+        // this cannot be an inline script.
         $this->hook->on('template:layout:js', array(
             'template' => 'plugins/Turnstile/Assets/js/turnstile.js',
+        ));
+
+        // Spacing, so the widget sits in the form's own rhythm on a stock
+        // install as well as a themed one.
+        $this->hook->on('template:layout:css', array(
+            'template' => 'plugins/Turnstile/Assets/css/turnstile.css',
         ));
 
         // The gate. Assigning over the key replaces the service for every
@@ -75,7 +83,7 @@ class Plugin extends Base
 
     public function getPluginVersion()
     {
-        return '0.4.0';
+        return '0.5.0';
     }
 
     public function getPluginHomepage()
